@@ -1,8 +1,2 @@
 # LIST YOUR APT PACKAGES HERE
-# ROS packages
-ros-noetic-ros-base
-ros-noetic-cv-bridge
-ros-noetic-image-transport
-
-# System dependencies
-python3-opencv
+unzip

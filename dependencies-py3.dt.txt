@@ -1,4 +1,15 @@
 # LIST YOUR DUCKIETOWN PYTHON3 PACKAGES HERE
 # NOTE: only place Duckietown libraries here; these libraries will be resolved to the latest available version and pinned; pin a specific version only if necessary
-duckietown-utils
-gym-duckietown
+
+# this is not HEAD, due to some issues with unashable objects (see DTSW-2042)
+git+https://github.com/duckietown/gym-duckietown.git@daffy-mooc2022
+
+# library shared between the agent and colab
+git+https://github.com/duckietown/lib-dt-mooc@v0.0.5
+
+aido-protocols-daffy
+duckietown-world-daffy
+
+# used to interface with the DCSS
+dt-data-api>=2.1.0,<3
+
