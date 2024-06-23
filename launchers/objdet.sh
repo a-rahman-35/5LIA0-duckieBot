@@ -18,19 +18,19 @@ source /code/catkin_ws/devel/setup.bash --extend
 #source /code/solution/devel/setup.bash --extend
 
 # Launch object detection node in background
-dt-exec roslaunch --wait object_detection object_detection_node.launch veh:=$VEHICLE_NAME &
-pid1=$!
+dt-exec roslaunch --wait object_detection object_detection_node.launch veh:=$VEHICLE_NAME
+# pid1=$!
 
 # Launch modcon node in background
-rosrun my_package modcon.py &
-pid2=$!
+#rosrun my_package modcon.py &
+#pid2=$!
 
 # ----------------------------------------------------------------------------
 # YOUR CODE ABOVE THIS LINE
 
 # wait for both processes to end
-wait $pid1
-wait $pid2
+#wait $pid1
+#wait $pid2
 
 # wait for app to end
 dt-launchfile-join

@@ -124,45 +124,45 @@ class ObjectDetectionNode(DTROS):
             obj_det_img = self.bridge.cv2_to_compressed_imgmsg(bgr)
             self.pub_detections_image.publish(obj_det_img)
 
-        if self._debug:
-            # Define colors and names for the new dataset
-            colors = {
-                0: (0, 255, 255), 1: (0, 165, 255), 2: (0, 250, 0), 3: (0, 0, 255),
-                4: (255, 0, 0), 5: (255, 255, 0), 6: (255, 0, 255), 7: (0, 255, 0),
-                8: (0, 255, 127), 9: (255, 127, 0), 10: (127, 0, 255), 11: (127, 255, 0),
-                12: (0, 127, 255), 13: (127, 127, 127), 14: (255, 255, 255), 15: (0, 0, 127),
-                16: (127, 0, 0), 17: (127, 127, 0)
-            }
-            names = [
-                'bridge_blue', 'bridge_red', 'cube_large', 'cube_small_wooden', 'cube_small_yellow',
-                'cylinder_large', 'cylinder_medium_brown', 'cylinder_medium_green', 'cylinder_small_blue',
-                'cylinder_small_brown', 'cylinder_small_green', 'rectangle_brown', 'rectangle_wooden', 'step',
-                'triangle_large', 'triangle_small_blue', 'triangle_small_green', 'triangle_small_red'
-            ]
+#         if self._debug:
+#             # Define colors and names for the new dataset
+#             colors = {
+#                 0: (0, 255, 255), 1: (0, 165, 255), 2: (0, 250, 0), 3: (0, 0, 255),
+#                 4: (255, 0, 0), 5: (255, 255, 0), 6: (255, 0, 255), 7: (0, 255, 0),
+#                 8: (0, 255, 127), 9: (255, 127, 0), 10: (127, 0, 255), 11: (127, 255, 0),
+#                 12: (0, 127, 255), 13: (127, 127, 127), 14: (255, 255, 255), 15: (0, 0, 127),
+#                 16: (127, 0, 0), 17: (127, 127, 0)
+#             }
+#             names = [
+#                 'bridge_blue', 'bridge_red', 'cube_large', 'cube_small_wooden', 'cube_small_yellow',
+#                 'cylinder_large', 'cylinder_medium_brown', 'cylinder_medium_green', 'cylinder_small_blue',
+#                 'cylinder_small_brown', 'cylinder_small_green', 'rectangle_brown', 'rectangle_wooden', 'step',
+#                 'triangle_large', 'triangle_small_blue', 'triangle_small_green', 'triangle_small_red'
+#             ]
             
-#            colors = {0: (0, 255, 255), 1: (0, 165, 255), 2: (0, 250, 0), 3: (0, 0, 255)}
-#            names = {0: "duckie", 1: "cone", 2: "truck", 3: "bus"}
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            for clas, box in zip(classes, bboxes):
-                clas_int = int(clas)  # Convert class ID to integer
-                pt1 = np.array([int(box[0]), int(box[1])])
-                pt2 = np.array([int(box[2]), int(box[3])])
-                pt1 = tuple(pt1)
-                pt2 = tuple(pt2)
-                self.log(f"Detected class: {names[clas_int]}")
-                color = tuple(reversed(colors[clas_int])) 
-                # reverse the colors to convert from BGR to RGB
-                name = names[clas_int]
-                # draw bounding box
-                rgb = cv2.rectangle(rgb, pt1, pt2, color, 2)
-                # label location
-                text_location = (pt1[0], min(pt2[1] + 30, IMAGE_SIZE))
-                # draw label underneath the bounding box
-                rgb = cv2.putText(rgb, name, text_location, font, 1, color, thickness=2)
+# #            colors = {0: (0, 255, 255), 1: (0, 165, 255), 2: (0, 250, 0), 3: (0, 0, 255)}
+# #            names = {0: "duckie", 1: "cone", 2: "truck", 3: "bus"}
+#             font = cv2.FONT_HERSHEY_SIMPLEX
+#             for clas, box in zip(classes, bboxes):
+#                 clas_int = int(clas)  # Convert class ID to integer
+#                 pt1 = np.array([int(box[0]), int(box[1])])
+#                 pt2 = np.array([int(box[2]), int(box[3])])
+#                 pt1 = tuple(pt1)
+#                 pt2 = tuple(pt2)
+#                 self.log(f"Detected class: {names[clas_int]}")
+#                 color = tuple(reversed(colors[clas_int])) 
+#                 # reverse the colors to convert from BGR to RGB
+#                 name = names[clas_int]
+#                 # draw bounding box
+#                 rgb = cv2.rectangle(rgb, pt1, pt2, color, 2)
+#                 # label location
+#                 text_location = (pt1[0], min(pt2[1] + 30, IMAGE_SIZE))
+#                 # draw label underneath the bounding box
+#                 rgb = cv2.putText(rgb, name, text_location, font, 1, color, thickness=2)
 
-            bgr = rgb[..., ::-1]
-            obj_det_img = self.bridge.cv2_to_compressed_imgmsg(bgr)
-            self.pub_detections_image.publish(obj_det_img)
+#             bgr = rgb[..., ::-1]
+#             obj_det_img = self.bridge.cv2_to_compressed_imgmsg(bgr)
+#             self.pub_detections_image.publish(obj_det_img)
 
     def get_object_name(self, class_id):
         if class_id < len(self.names):
@@ -184,4 +184,3 @@ if __name__ == "__main__":
     object_detection_node = ObjectDetectionNode(node_name="object_detection_node")
     # Keep it spinning
     rospy.spin()
-
