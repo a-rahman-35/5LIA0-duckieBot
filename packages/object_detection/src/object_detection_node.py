@@ -3,86 +3,78 @@
 import cv2
 import numpy as np
 import rospy
-
+import os
+from datetime import datetime
 from duckietown.dtros import DTROS, NodeType, TopicType
-from duckietown_msgs.msg import EpisodeStart
+from duckietown_msgs.msg import Twist2DStamped
 from cv_bridge import CvBridge
-from sensor_msgs.msg import CompressedImage
-
+from sensor_msgs.msg import CompressedImage, Range
 from nn_model.constants import IMAGE_SIZE
 from nn_model.model import Wrapper
-
-from nn_model.integration_activity import \
-    NUMBER_FRAMES_SKIPPED, \
-    filter_by_classes, \
-    filter_by_bboxes, \
-    filter_by_scores
+from nn_model.integration_activity import filter_by_classes, filter_by_bboxes, filter_by_scores, NUMBER_FRAMES_SKIPPED
 
 class ObjectDetectionNode(DTROS):
     def __init__(self, node_name):
-        # Initialize the DTROS parent class
         super(ObjectDetectionNode, self).__init__(node_name=node_name, node_type=NodeType.PERCEPTION)
+        self.veh = rospy.get_namespace().strip("/")
         self.initialized = False
         self.log("Initializing!")
 
-        self.veh = rospy.get_namespace().strip("/")
-        self.avoid_duckies = False
-
-        # Construct the publisher for debug images
-        self.pub_detections_image = rospy.Publisher(
-            "~image/compressed",
-            CompressedImage,
-            queue_size=1,
-            dt_topic_type=TopicType.DEBUG
-        )
-
-        # Construct the subscriber for compressed images
-        self.sub_image = rospy.Subscriber(
-            f"/{self.veh}/camera_node/image/compressed",
-            CompressedImage,
-            self.image_cb,
-            buff_size=10000000,
-            queue_size=1,
-        )
-
         self.bridge = CvBridge()
-
-        aido_eval = rospy.get_param("~AIDO_eval", False)
-        self.log(f"AIDO EVAL VAR: {aido_eval}")
-        self.log("Starting model loading!")
-        self._debug = False
         self.model_wrapper = Wrapper()
-        self.log("Finished model loading!")
         self.frame_id = 0
         self.first_image_received = False
+        self.pub_detections_image = rospy.Publisher("~image/compressed", CompressedImage, queue_size=1, dt_topic_type=TopicType.DEBUG)
+        self.sub_image = rospy.Subscriber(f"/{self.veh}/camera_node/image/compressed", CompressedImage, self.image_cb, buff_size=10000000, queue_size=1)
+        # self.tof_subscriber = rospy.Subscriber(f"/{self.veh}/front_center_tof_driver_node/range", Range, self.tof_cb)
+        self.chassis_publisher = rospy.Publisher(f"/{self.veh}/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1)
+        
+        # self.objects = ["triangle_small_blue", "triangle_small_green"]
+        self.objects = ["Duckie"]
+        # self.objects = ["cube_small_wooden"]
+        self.drop_off_object = "Cone"
+        self.obstacle_object = "triangle_small_red"
+        self.detected_objects = []
+        self.state = "search"
+        self.holding_object = False
+        self.objects_picked_up = 0
+        self.total_objects_to_pick = len(self.objects)
+
+        self.Kp = 0.6
+        self.Ki = 0.01
+        self.Kd = 0.01
+        self.min_angular_velocity = 0.01
+        self.max_angular_velocity = 1.2
+        self.angle_threshold = 0.05
+        self.integral_error = 0
+        self.previous_error = 0
+        self.integral_limit = 1.0  # Anti-windup for PID controller
+        self.ToF_distance = 0.1
+        self.tof_distance = 0.5
+        self.image_center_x = IMAGE_SIZE / 2
+
+        self.search_duration = 4  # Duration to spin in place (seconds)
+        self.spin_timer = rospy.Time.now()
+        self.spin_interval = rospy.Duration(4)  # Pause interval between spins
+
+        # Threshold values for bounding box sizes
+        self.pickup_bb_threshold = 0.03  # Adjust this threshold based on actual size
+        self.dropoff_bb_threshold = 0.02  # Larger threshold for drop-off object
+
+        # Bayesian filter parameters
+        self.detection_probabilities = {obj: 0.5 for obj in self.objects + [self.drop_off_object, self.obstacle_object]}
+
         self.initialized = True
         self.log("Initialized!")
-        
-        # Define colors and names for the new dataset
-        self.colors = {
-            0: (0, 255, 255), 1: (0, 165, 255), 2: (0, 250, 0), 3: (0, 0, 255),
-            4: (255, 0, 0), 5: (255, 255, 0), 6: (255, 0, 255), 7: (0, 255, 0),
-            8: (0, 255, 127), 9: (255, 127, 0), 10: (127, 0, 255), 11: (127, 255, 0),
-            12: (0, 127, 255), 13: (127, 127, 127), 14: (255, 255, 255), 15: (0, 0, 127),
-            16: (127, 0, 0), 17: (127, 127, 0)
-        }
-        self.names = [
-            'bridge_blue', 'bridge_red', 'cube_large', 'cube_small_wooden', 'cube_small_yellow',
-            'cylinder_large', 'cylinder_medium_brown', 'cylinder_medium_green', 'cylinder_small_blue',
-            'cylinder_small_brown', 'cylinder_small_green', 'rectangle_brown', 'rectangle_wooden', 'step',
-            'triangle_large', 'triangle_small_blue', 'triangle_small_green', 'triangle_small_red'
-        ]
 
     def image_cb(self, image_msg):
         if not self.initialized:
             return
-
         self.frame_id += 1
         self.frame_id = self.frame_id % (1 + NUMBER_FRAMES_SKIPPED())
         if self.frame_id != 0:
             return
 
-        # Decode from compressed image with OpenCV
         try:
             bgr = self.bridge.compressed_imgmsg_to_cv2(image_msg)
         except ValueError as e:
@@ -92,95 +84,179 @@ class ObjectDetectionNode(DTROS):
         rgb = bgr[..., ::-1]
         rgb = cv2.resize(rgb, (IMAGE_SIZE, IMAGE_SIZE))
         bboxes, classes, scores = self.model_wrapper.predict(rgb)
+        detected_objects = self.process_detections(bboxes, classes, scores)
+        detected_objects = self.apply_bayes_filter(detected_objects)
 
-        detection = self.det2bool(bboxes, classes, scores)
+        self.detected_objects = detected_objects
+        self.log_detected_objects()
+        self.run_state_machine()
 
+    def process_detections(self, bboxes, classes, scores):
         detected_objects = []
-        if detection:
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            for clas, bbox, score in zip(classes, bboxes, scores):
+        for clas, bbox, score in zip(classes, bboxes, scores):
+            if filter_by_bboxes(bbox) and filter_by_classes(clas) and filter_by_scores(score):
                 clas_int = int(clas)  # Convert class ID to integer
-                object_name = self.get_object_name(clas_int)
-                detected_objects.append(f"{object_name} (score: {score:.2f}, bbox: {bbox})")
-                self.log(f"Detected class ID: {clas_int}, name: {object_name}, score: {score:.2f}, bbox: {bbox}")
-                
-                pt1 = np.array([int(bbox[0]), int(bbox[1])])
-                pt2 = np.array([int(bbox[2]), int(bbox[3])])
-                pt1 = tuple(pt1)
-                pt2 = tuple(pt2)
-                
-                # self.log(f"Detected class: {names[clas_int]}")
-                color = tuple(reversed(self.colors[clas_int])) 
-                # reverse the colors to convert from BGR to RGB
-                name = self.names[clas_int]
-                # draw bounding box
-                rgb = cv2.rectangle(rgb, pt1, pt2, color, 2)
-                # label location
-                text_location = (pt1[0], min(pt2[1] + 30, IMAGE_SIZE))
-                # draw label underneath the bounding box
-                rgb = cv2.putText(rgb, name, text_location, font, 1, color, thickness=2)
-            # self.log(f"Objects detected: {', '.join(detected_objects)}")
-            bgr = rgb[..., ::-1]
-            obj_det_img = self.bridge.cv2_to_compressed_imgmsg(bgr)
-            self.pub_detections_image.publish(obj_det_img)
+                object_name = self.get_object_name_duckie(clas_int)
+                if object_name in self.objects + [self.drop_off_object, self.obstacle_object]:  # Only consider relevant objects
+                    center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
+                    detected_objects.append({"name": object_name, "score": score, "bbox": bbox, "center": center})
+        return detected_objects
 
-#         if self._debug:
-#             # Define colors and names for the new dataset
-#             colors = {
-#                 0: (0, 255, 255), 1: (0, 165, 255), 2: (0, 250, 0), 3: (0, 0, 255),
-#                 4: (255, 0, 0), 5: (255, 255, 0), 6: (255, 0, 255), 7: (0, 255, 0),
-#                 8: (0, 255, 127), 9: (255, 127, 0), 10: (127, 0, 255), 11: (127, 255, 0),
-#                 12: (0, 127, 255), 13: (127, 127, 127), 14: (255, 255, 255), 15: (0, 0, 127),
-#                 16: (127, 0, 0), 17: (127, 127, 0)
-#             }
-#             names = [
-#                 'bridge_blue', 'bridge_red', 'cube_large', 'cube_small_wooden', 'cube_small_yellow',
-#                 'cylinder_large', 'cylinder_medium_brown', 'cylinder_medium_green', 'cylinder_small_blue',
-#                 'cylinder_small_brown', 'cylinder_small_green', 'rectangle_brown', 'rectangle_wooden', 'step',
-#                 'triangle_large', 'triangle_small_blue', 'triangle_small_green', 'triangle_small_red'
-#             ]
-            
-# #            colors = {0: (0, 255, 255), 1: (0, 165, 255), 2: (0, 250, 0), 3: (0, 0, 255)}
-# #            names = {0: "duckie", 1: "cone", 2: "truck", 3: "bus"}
-#             font = cv2.FONT_HERSHEY_SIMPLEX
-#             for clas, box in zip(classes, bboxes):
-#                 clas_int = int(clas)  # Convert class ID to integer
-#                 pt1 = np.array([int(box[0]), int(box[1])])
-#                 pt2 = np.array([int(box[2]), int(box[3])])
-#                 pt1 = tuple(pt1)
-#                 pt2 = tuple(pt2)
-#                 self.log(f"Detected class: {names[clas_int]}")
-#                 color = tuple(reversed(colors[clas_int])) 
-#                 # reverse the colors to convert from BGR to RGB
-#                 name = names[clas_int]
-#                 # draw bounding box
-#                 rgb = cv2.rectangle(rgb, pt1, pt2, color, 2)
-#                 # label location
-#                 text_location = (pt1[0], min(pt2[1] + 30, IMAGE_SIZE))
-#                 # draw label underneath the bounding box
-#                 rgb = cv2.putText(rgb, name, text_location, font, 1, color, thickness=2)
+    def apply_bayes_filter(self, detected_objects):
+        updated_detections = []
+        for obj in detected_objects:
+            name = obj["name"]
+            if name not in self.detection_probabilities:
+                self.detection_probabilities[name] = 0.5
+            self.detection_probabilities[name] = 0.9 * self.detection_probabilities[name] + 0.1 * obj["score"]
+            if self.detection_probabilities[name] > 0.5:
+                updated_detections.append(obj)
+        return updated_detections
 
-#             bgr = rgb[..., ::-1]
-#             obj_det_img = self.bridge.cv2_to_compressed_imgmsg(bgr)
-#             self.pub_detections_image.publish(obj_det_img)
-
-    def get_object_name(self, class_id):
-        if class_id < len(self.names):
-            return self.names[int(class_id)]
+    def get_object_name_duckie(self, class_id):
+        names = ['Duckie', 'Cone']
+        if class_id < len(names):
+            return names[class_id]
         return 'unknown'
 
-    def det2bool(self, bboxes, classes, scores):
-        box_ids = np.array(list(map(filter_by_bboxes, bboxes))).nonzero()[0]
-        cla_ids = np.array(list(map(filter_by_classes, classes))).nonzero()[0]
-        sco_ids = np.array(list(map(filter_by_scores, scores))).nonzero()[0]
+    def log_detected_objects(self):
+        for obj in self.detected_objects:
+            bbox_size = self.bbox_size(obj['bbox'])
+            self.log(f"Detected: {obj['name']} with bbox {obj['bbox']} and score {obj['score']}, BBox Size = {bbox_size}")
 
-        box_cla_ids = set(list(box_ids)).intersection(set(list(cla_ids)))
-        box_cla_sco_ids = set(list(sco_ids)).intersection(set(list(box_cla_ids)))
+    def move(self, v, omega):
+        twist = Twist2DStamped(v=v, omega=omega)
+        self.chassis_publisher.publish(twist)
 
-        return len(box_cla_sco_ids) > 0
+    def pid_control(self, error):
+        self.integral_error += error
+        if self.integral_error > self.integral_limit:
+            self.integral_error = self.integral_limit
+        elif self.integral_error < -self.integral_limit:
+            self.integral_error = -self.integral_limit
+        derivative_error = error - self.previous_error
+        control_effort = self.Kp * error + self.Ki * self.integral_error + self.Kd * derivative_error
+        self.previous_error = error
+        return control_effort
+        
+    def reset_pid(self):
+        self.integral_error = 0
+        self.previous_error = 0
+
+    def search(self):
+        self.log("Searching for objects...")
+        if rospy.Time.now() - self.spin_timer < self.spin_interval:
+            self.move(0, 0)
+        else:
+            self.spin_timer = rospy.Time.now()
+            self.move(0.0, 0.5)  # Turn to search for objects
+
+        if self.detected_objects:
+            detected_names = [obj['name'] for obj in self.detected_objects]
+            if any(name in self.objects for name in detected_names):
+                self.log(f"Target object detected during search")
+                self.state = "approach_object"
+            elif self.holding_object and self.drop_off_object in detected_names:
+                self.log(f"Drop-off object detected during search")
+                self.state = "approach_drop_off"
+
+    def approach_object(self):
+        if not self.detected_objects:
+            self.log("Lost object, returning to search")
+            self.reset_pid()
+            self.state = "search"
+            return
+
+        if self.holding_object:
+            target_objects = [obj for obj in self.detected_objects if obj['name'] == self.drop_off_object]
+            if not target_objects:
+                self.log("No drop-off objects found, returning to search")
+                self.reset_pid()
+                self.state = "search_drop_off"
+                return
+        else:
+            target_objects = [obj for obj in self.detected_objects if obj['name'] in self.objects]
+            if not target_objects:
+                self.log("No target objects found, returning to search")
+                self.reset_pid()
+                self.state = "search"
+                return
+
+        closest_object = max(target_objects, key=lambda obj: obj['score'])
+        obj_center_x, _ = closest_object['center']
+        
+        error_x = obj_center_x - self.image_center_x
+
+        control_effort = self.pid_control(error_x / self.image_center_x)
+        
+        if abs(control_effort) < self.min_angular_velocity:
+            control_effort = self.min_angular_velocity * np.sign(control_effort)
+        
+        control_effort = np.clip(control_effort, -self.max_angular_velocity, self.max_angular_velocity)
+        
+        self.move(0.05, -control_effort)  # Move forward while adjusting direction
+        
+        bbox_size = self.bbox_size(closest_object['bbox'])
+        self.log(f"Centering and approaching object: Error X = {error_x}, Control effort = {-control_effort}, BBox Size = {bbox_size}")
+
+        if self.holding_object:
+            if bbox_size > self.dropoff_bb_threshold:  # Larger threshold for drop-off object
+                self.move(0, 0)
+                self.log("Object dropped off")
+                self.holding_object = False
+                self.objects_picked_up += 1
+                if self.objects_picked_up >= self.total_objects_to_pick:
+                    self.state = "idle"
+                else:
+                    self.state = "search"
+                self.reset_pid()
+        else:
+            if bbox_size > self.pickup_bb_threshold:  # Threshold for pickup objects
+                self.move(0, 0)
+                self.log("Object reached and picked up")
+                self.holding_object = True
+                self.state = "search_drop_off"
+                self.reset_pid()
+
+    def search_drop_off(self):
+        self.log("Searching for drop-off location...")
+        if rospy.Time.now() - self.spin_timer < self.spin_interval:
+            self.move(0, 0)
+        else:
+            self.spin_timer = rospy.Time.now()
+            self.move(0.0, 0.5)  # Turn to search for drop-off location
+
+        if self.detected_objects:
+            detected_names = [obj['name'] for obj in self.detected_objects]
+            if self.drop_off_object in detected_names:
+                self.log(f"Drop-off object detected during search")
+                self.state = "approach_drop_off"
+
+    def bbox_size(self, bbox):
+        return (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) / (IMAGE_SIZE ** 2)
+
+    def run_state_machine(self):
+        self.loginfo(f"State: {self.state}")
+        if self.state == "search":
+            self.search()
+        elif self.state == "approach_object":
+            self.approach_object()
+        elif self.state == "search_drop_off":
+            self.search_drop_off()
+        elif self.state == "approach_drop_off":
+            self.approach_object()
+        elif self.state == "idle":
+            pass
+            
+    def on_shutdown(self):
+        self.move(0, 0)
+        rospy.loginfo("Object Detection Node is shutting down.")    
+
+    # def tof_cb(self, tof_msg):
+    #    self.tof_distance = tof_msg.range
 
 if __name__ == "__main__":
-    # Initialize the node
     object_detection_node = ObjectDetectionNode(node_name="object_detection_node")
-    # Keep it spinning
+    rospy.on_shutdown(object_detection_node.on_shutdown)
     rospy.spin()
+

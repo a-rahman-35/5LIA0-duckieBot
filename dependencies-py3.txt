@@ -7,7 +7,7 @@ gitpython
 pyglet==1.5.15
 
 # numpy (pinned version is needed due to incompatibilities with duckietown-world)
-numpy==1.20.0
+numpy
 
 # pandas (pinned version is to avoid this: https://stackoverflowteams.com/c/duckietown/questions/2673)
 pandas==1.4.4

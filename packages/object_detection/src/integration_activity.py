@@ -30,7 +30,8 @@ def filter_by_classes(pred_class: int) -> bool:
     # TODO: Change this to only return True for duckies!
     # In other words, returning False means that this prediction is ignored.
     # List of class IDs to detect
-    target_classes = [3, 15, 16, 17]  # Assuming these are the correct IDs for the specified classes
+    # target_classes = [3, 15, 16, 17]  # 14: cube_small_wooden, 16: triangle_small_green
+    target_classes = [0, 1]
     return pred_class in target_classes
 
 
@@ -42,7 +43,7 @@ def filter_by_scores(score: float) -> bool:
     # Right now, this returns True for every object's confidence
     # TODO: Change this to filter the scores, or not at all
     # (returning True for all of them might be the right thing to do!)
-    return score > 0.80
+    return score > 0.60
 
 
 def filter_by_bboxes(bbox: Tuple[int, int, int, int]) -> bool:
@@ -58,6 +59,6 @@ def filter_by_bboxes(bbox: Tuple[int, int, int, int]) -> bool:
 
     if width < 35 or height < 50:
         return False
-    if width > 300 or height > 300:
+    if width > 400 or height > 400:
         return False
     return True
